@@ -1,0 +1,575 @@
+// Daycare Franchise ERP — Prisma schema
+// Multi-tenant: every center-scoped table carries centerId. Guardian/Child
+// records are global (shared across the franchise).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  HQ_ADMIN
+  CENTER_OWNER
+  FRONTDESK_STAFF
+  PARENT
+}
+
+enum LeadStatus {
+  LEAD
+  TOUR_SCHEDULED
+  WAITLISTED
+  ENROLLED
+  LOST
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+enum ScheduleType {
+  FULL_TIME
+  PART_TIME
+  DROP_IN
+}
+
+enum AddOnType {
+  MEAL
+  EXTENDED_CARE
+  ACTIVITY
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PAID
+  OVERDUE
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+}
+
+enum FranchiseFeeStatus {
+  UNPAID
+  PAID
+  OVERDUE
+}
+
+enum CheckMethod {
+  SELF
+  FRONTDESK
+}
+
+enum IncidentType {
+  INJURY
+  MEDICATION
+  ALLERGY
+  OTHER
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CertAlertStatus {
+  OK
+  EXPIRING_SOON
+  EXPIRED
+}
+
+enum StockTxType {
+  IN
+  OUT
+}
+
+enum InventoryCategory {
+  FOOD
+  SUPPLIES
+  SAFETY
+}
+
+enum RelationshipType {
+  MOTHER
+  FATHER
+  GUARDIAN
+  GRANDPARENT
+  OTHER
+}
+
+enum PortalAccessLevel {
+  FULL
+  VIEW_ONLY
+  NONE
+}
+
+enum PayrollRateType {
+  BPJS_HEALTH
+  BPJS_EMPLOYMENT
+  PPH21_BRACKET
+  OVERTIME_MULTIPLIER
+}
+
+enum NotificationType {
+  INCIDENT
+  PAYMENT_REMINDER
+  CERTIFICATION_EXPIRY
+  WAITLIST_UPDATE
+  GENERAL
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Identity / Org
+// ─────────────────────────────────────────────────────────────────────────
+
+model Franchise {
+  id            String   @id @default(uuid())
+  name          String
+  brandSettings Json     @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  centers      Center[]
+  users        User[]
+  rateTables   PayrollRateTable[]
+}
+
+model Center {
+  id          String   @id @default(uuid())
+  franchiseId String
+  franchise   Franchise @relation(fields: [franchiseId], references: [id], onDelete: Cascade)
+  name        String
+  address     String?
+  licenseInfo String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userAccess       UserCenterAccess[]
+  children         Child[]
+  leads            Lead[]
+  programs         Program[]
+  enrollments      Enrollment[]
+  franchiseFees    FranchiseFee[]
+  attendanceRecords AttendanceRecord[]
+  staff            Staff[]
+  shifts           Shift[]
+  inventoryItems   InventoryItem[]
+
+  @@index([franchiseId])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  isActive     Boolean  @default(true)
+  franchiseId  String?
+  franchise    Franchise? @relation(fields: [franchiseId], references: [id])
+  guardianId   String?    @unique
+  guardian     Guardian?  @relation(fields: [guardianId], references: [id])
+  staffId      String?    @unique
+  staff        Staff?     @relation(fields: [staffId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  centerAccess UserCenterAccess[]
+  refreshTokens RefreshToken[]
+  reconciledPayments Payment[] @relation("ReconciledBy")
+  reportedIncidents  IncidentLog[] @relation("StaffReporter")
+}
+
+// Grants CENTER_OWNER / FRONTDESK_STAFF users access to one or more centers.
+model UserCenterAccess {
+  id       String @id @default(uuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  centerId String
+  center   Center @relation(fields: [centerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, centerId])
+  @@index([centerId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Guardian / Child (global — shared across the franchise)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Guardian {
+  id          String   @id @default(uuid())
+  name        String
+  contactInfo Json // { phone, email, address }
+  pushTokens  String[] @default([]) // Expo push tokens registered from the parent app
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user             User?
+  childLinks       GuardianChildLink[]
+  billingEnrollments Enrollment[] @relation("BillingGuardian")
+  invoices         Invoice[]
+  leads            Lead[]
+}
+
+model Child {
+  id              String   @id @default(uuid())
+  name            String
+  dob             DateTime
+  allergies       String?
+  medicalNotes    String?
+  currentCenterId String?
+  currentCenter   Center?  @relation(fields: [currentCenterId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  guardianLinks     GuardianChildLink[]
+  enrollments       Enrollment[]
+  attendanceRecords AttendanceRecord[]
+  incidentLogs      IncidentLog[]
+
+  @@index([currentCenterId])
+}
+
+model GuardianChildLink {
+  id                 String            @id @default(uuid())
+  guardianId         String
+  guardian           Guardian          @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+  childId            String
+  child              Child             @relation(fields: [childId], references: [id], onDelete: Cascade)
+  relationshipType   RelationshipType
+  isBillingGuardian  Boolean           @default(false)
+  pickupAuthorized   Boolean           @default(true)
+  portalAccessLevel  PortalAccessLevel @default(FULL)
+  createdAt          DateTime          @default(now())
+
+  @@unique([guardianId, childId])
+  @@index([childId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enrollment / CRM
+// ─────────────────────────────────────────────────────────────────────────
+
+model Lead {
+  id               String     @id @default(uuid())
+  centerId         String
+  center           Center     @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  childName        String
+  guardianContact  Json // { name, phone, email }
+  guardianId       String?
+  guardian         Guardian?  @relation(fields: [guardianId], references: [id])
+  status           LeadStatus @default(LEAD)
+  tourDate         DateTime?
+  waitlistPosition Int?
+  notes            String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@index([centerId, status])
+}
+
+model Program {
+  id           String       @id @default(uuid())
+  centerId     String
+  center       Center       @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  name         String
+  ageGroup     String
+  baseFee      Decimal      @db.Decimal(12, 2)
+  scheduleType ScheduleType
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  enrollments Enrollment[]
+
+  @@index([centerId])
+}
+
+model AddOnService {
+  id        String    @id @default(uuid())
+  name      String
+  fee       Decimal   @db.Decimal(12, 2)
+  type      AddOnType
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+}
+
+model Enrollment {
+  id                String           @id @default(uuid())
+  childId           String
+  child             Child            @relation(fields: [childId], references: [id], onDelete: Cascade)
+  centerId          String
+  center            Center           @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  programId         String
+  program           Program          @relation(fields: [programId], references: [id])
+  billingGuardianId String
+  billingGuardian   Guardian         @relation("BillingGuardian", fields: [billingGuardianId], references: [id])
+  startDate         DateTime
+  endDate           DateTime?
+  status            EnrollmentStatus @default(ACTIVE)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  invoices Invoice[]
+
+  @@index([centerId, status])
+  @@index([childId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Billing & Finance
+// ─────────────────────────────────────────────────────────────────────────
+
+model Invoice {
+  id                String        @id @default(uuid())
+  enrollmentId      String
+  enrollment        Enrollment    @relation(fields: [enrollmentId], references: [id])
+  centerId          String
+  billingGuardianId String
+  billingGuardian   Guardian      @relation(fields: [billingGuardianId], references: [id])
+  period            String // e.g. "2026-08"
+  lineItems         Json // [{ description, kind, quantity, unitPrice, amount }]
+  total             Decimal       @db.Decimal(12, 2)
+  status            InvoiceStatus @default(UNPAID)
+  dueDate           DateTime
+  paymentProofUrl   String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  payments Payment[]
+
+  @@index([centerId, status])
+  @@index([billingGuardianId])
+}
+
+model Payment {
+  id             String        @id @default(uuid())
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount         Decimal       @db.Decimal(12, 2)
+  method         PaymentMethod @default(BANK_TRANSFER)
+  referenceNo    String?
+  reconciledById String?
+  reconciledBy   User?         @relation("ReconciledBy", fields: [reconciledById], references: [id])
+  reconciledAt   DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@index([invoiceId])
+}
+
+model FranchiseFee {
+  id        String             @id @default(uuid())
+  centerId  String
+  center    Center             @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  period    String // e.g. "2026-08"
+  amount    Decimal            @db.Decimal(12, 2)
+  status    FranchiseFeeStatus @default(UNPAID)
+  dueDate   DateTime
+  paidAt    DateTime?
+  createdAt DateTime           @default(now())
+
+  @@unique([centerId, period])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Attendance & Health / Incident
+// ─────────────────────────────────────────────────────────────────────────
+
+model AttendanceRecord {
+  id              String       @id @default(uuid())
+  childId         String
+  child           Child        @relation(fields: [childId], references: [id], onDelete: Cascade)
+  centerId        String
+  center          Center       @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  checkInTime     DateTime
+  checkInMethod   CheckMethod
+  checkOutTime    DateTime?
+  checkOutMethod  CheckMethod?
+  createdAt       DateTime     @default(now())
+
+  @@index([centerId, checkInTime])
+  @@index([childId])
+}
+
+model IncidentLog {
+  id              String           @id @default(uuid())
+  childId         String
+  child           Child            @relation(fields: [childId], references: [id], onDelete: Cascade)
+  type            IncidentType
+  severity        IncidentSeverity
+  description     String
+  staffReporterId String
+  staffReporter   User             @relation("StaffReporter", fields: [staffReporterId], references: [id])
+  timestamp       DateTime         @default(now())
+  parentNotified  Boolean          @default(false)
+  parentAck       Boolean          @default(false)
+  parentAckAt     DateTime?
+
+  @@index([childId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Staff / HCM / Payroll
+// ─────────────────────────────────────────────────────────────────────────
+
+model Staff {
+  id          String   @id @default(uuid())
+  centerId    String
+  center      Center   @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  name        String
+  role        String
+  contactInfo Json
+  hireDate    DateTime
+  baseSalary  Decimal  @db.Decimal(12, 2) @default(0) // monthly base — payroll engine input
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user            User?
+  certifications  Certification[]
+  shifts          Shift[]
+  payrollRecords  PayrollRecord[]
+
+  @@index([centerId])
+}
+
+model Certification {
+  id          String          @id @default(uuid())
+  staffId     String
+  staff       Staff           @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  type        String
+  issueDate   DateTime
+  expiryDate  DateTime
+  alertStatus CertAlertStatus @default(OK)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([staffId])
+  @@index([expiryDate])
+}
+
+model Shift {
+  id        String   @id @default(uuid())
+  staffId   String
+  staff     Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  centerId  String
+  center    Center   @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  date      DateTime
+  startTime DateTime
+  endTime   DateTime
+  createdAt DateTime @default(now())
+
+  @@index([centerId, date])
+  @@index([staffId, date])
+}
+
+model PayrollRecord {
+  id              String   @id @default(uuid())
+  staffId         String
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  period          String // e.g. "2026-08"
+  baseSalary      Decimal  @db.Decimal(12, 2)
+  overtimeHours   Decimal  @db.Decimal(8, 2) @default(0)
+  overtimePay     Decimal  @db.Decimal(12, 2) @default(0)
+  bpjsDeduction   Decimal  @db.Decimal(12, 2) @default(0)
+  pph21Tax        Decimal  @db.Decimal(12, 2) @default(0)
+  netPay          Decimal  @db.Decimal(12, 2)
+  computedAt      DateTime @default(now())
+  breakdown       Json     @default("{}")
+
+  @@unique([staffId, period])
+}
+
+// Configurable statutory rate tables — never hardcode BPJS/PPh21 rates.
+// Validate against current Indonesian regulations before go-live.
+model PayrollRateTable {
+  id             String          @id @default(uuid())
+  franchiseId    String
+  franchise      Franchise       @relation(fields: [franchiseId], references: [id], onDelete: Cascade)
+  type           PayrollRateType
+  label          String
+  rate           Decimal         @db.Decimal(8, 5) // percentage as decimal, e.g. 0.01 = 1%
+  minIncome      Decimal?        @db.Decimal(12, 2)
+  maxIncome      Decimal?        @db.Decimal(12, 2)
+  effectiveDate  DateTime
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+
+  @@index([franchiseId, type, isActive])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Inventory
+// ─────────────────────────────────────────────────────────────────────────
+
+model InventoryItem {
+  id               String            @id @default(uuid())
+  centerId         String
+  center           Center            @relation(fields: [centerId], references: [id], onDelete: Cascade)
+  name             String
+  category         InventoryCategory
+  currentStock     Decimal           @db.Decimal(12, 2) @default(0)
+  reorderThreshold Decimal           @db.Decimal(12, 2)
+  unit             String
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  stockTransactions StockTransaction[]
+
+  @@index([centerId])
+}
+
+model StockTransaction {
+  id        String        @id @default(uuid())
+  itemId    String
+  item      InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  type      StockTxType
+  quantity  Decimal       @db.Decimal(12, 2)
+  date      DateTime      @default(now())
+  reason    String?
+  createdAt DateTime      @default(now())
+
+  @@index([itemId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Notifications
+// ─────────────────────────────────────────────────────────────────────────
+
+model Notification {
+  id         String           @id @default(uuid())
+  guardianId String?
+  userId     String?
+  type       NotificationType
+  title      String
+  body       String
+  data       Json             @default("{}")
+  read       Boolean          @default(false)
+  createdAt  DateTime         @default(now())
+
+  @@index([guardianId])
+  @@index([userId])
+}

@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Little Sprouts Parent",
+    "slug": "little-sprouts-parent",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.littlesprouts.parent"
+    },
+    "android": {
+      "package": "com.littlesprouts.parent",
+      "adaptiveIcon": {
+        "backgroundColor": "#2E7D32"
+      }
+    },
+    "plugins": ["expo-notifications"],
+    "extra": {
+      "apiUrl": "http://localhost:3001/api/v1"
+    }
+  }
+}
